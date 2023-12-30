@@ -12,7 +12,7 @@ from langchain.vectorstores import DocArrayInMemorySearch
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 st.set_page_config(page_title="Chat with CJC's TL;DR Bot", page_icon="🤖")
-st.title("🤖 Chat with Jemmet about your Documents")
+st.title("🤖 Chat with CJC's TL;DR Bot")
 
 
 @st.cache_resource(ttl="1h")
