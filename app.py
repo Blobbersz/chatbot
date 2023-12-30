@@ -1,126 +1,118 @@
-import streamlit as st
-from langchain.llms import OpenAI
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import PyPDFLoader
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import PromptTemplate
-# from langchain.schema import Document
-from langchain.document_loaders import Docx2txtLoader
-
-# from docx import Document as docx
-
-import streamlit as st
-
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
+import os
 import tempfile
+import streamlit as st
+from langchain.chat_models import ChatOpenAI
+from langchain.document_loaders import PyPDFLoader
+from langchain.memory import ConversationBufferMemory
+from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.callbacks.base import BaseCallbackHandler
+from langchain.chains import ConversationalRetrievalChain
+from langchain.vectorstores import DocArrayInMemorySearch
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
-# File upload
-allowed_file_types = ["docx", "txt", "pdf"]
-
-def generate_response(uploaded_file, openai_api_key, query_text):
-
-    # Load document if file is uploaded
-    if uploaded_file is not None:
-
-        # Retrieve file extension
-        file_extension = uploaded_file.name.split(".")[-1].lower()
-
-        # Check if file extension allowed
-        if file_extension in allowed_file_types:
-
-            # Read the content of the uploaded file as bytes
-            file_content = uploaded_file.read()
-
-            # Save the content to a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-                temp_file.write(file_content)
-                temp_file_path = temp_file.name
-
-            if file_extension == 'pdf':
-                loader = PyPDFLoader(temp_file_path)
-                #Load the document by calling loader.load()
-                docs = loader.load()
-                
-            
-            elif file_extension == 'docx':
-                loader = Docx2txtLoader(temp_file_path)
-                docs = loader.load()
-
-            # Split documents into chunks
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size = 1500,
-                chunk_overlap = 150,
-                separators=["\n\n", "\n", " ", ""]
-            ) 
-
-            splits = text_splitter.split_documents(docs)
-
-            # Select embeddings
-            embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key) 
-
-            # Create a vectorstore from documents
-            db = Chroma.from_documents(
-                documents=splits,
-                embedding=embeddings)
-            
-            # Build prompt
-            template = """Use the following pieces of context to answer the question at the end. \
-                If you don't know the answer, just say that you don't know, don't try to make up an answer. Use between 1-25 sentences unless there is a lot of information to synthesize. \
-                    Keep the answer concise but do not leave out important details. Always end with "Thanks for asking!" at the end of the answer. 
-            {context}
-            Question: {question}
-            Helpful Answer:"""
-            QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
-
-            # Create retriever interface
-            retriever = db.as_retriever()
-
-            # Create QA chain
-            llm = ChatOpenAI(model_name='gpt-3.5-turbo', temperature=0)
-            
-            qa_chain = RetrievalQA.from_chain_type(
-                llm,
-                chain_type_kwargs={"prompt": QA_CHAIN_PROMPT},
-                retriever=retriever,
-                return_source_documents=False
-                )
-            
-            # Run chain
-            result = qa_chain({"query": query_text})
-
-            answer = result['result']
-
-            return answer
+st.set_page_config(page_title="LangChain: Chat with Jemmet, the TL;DR Bot", page_icon="🤖")
+st.title("🤖 Chat with Jemmet about your Documents")
 
 
-# Page title
-st.set_page_config(page_title='TL;DR Bot 📖 🤖')
-st.title('TL;DR Bot 📖 🤖')
+@st.cache_resource(ttl="1h")
+def configure_retriever(uploaded_files):
+    # Read documents
+    docs = []
+    temp_dir = tempfile.TemporaryDirectory()
+    for file in uploaded_files:
+        temp_filepath = os.path.join(temp_dir.name, file.name)
+        with open(temp_filepath, "wb") as f:
+            f.write(file.getvalue())
+        loader = PyPDFLoader(temp_filepath)
+        docs.extend(loader.load())
+
+    # Split documents
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
+    splits = text_splitter.split_documents(docs)
+
+    # Create embeddings and store in vectordb
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectordb = DocArrayInMemorySearch.from_documents(splits, embeddings)
+
+    # Define retriever
+    retriever = vectordb.as_retriever(search_type="mmr", search_kwargs={"k": 2, "fetch_k": 4})
+
+    return retriever
 
 
-uploaded_file = st.file_uploader('Hi, I am the CJC Econs Chatbot 🤖. To start, upload a document, ask a question and enter your OpenAI API Key',
-                                #  accept_multiple_files=True,
-                                  type=allowed_file_types,
-                                  accept_multiple_files=False)
-# Query text
-query_text = st.text_input('Enter your question:', placeholder = 'Please provide a short summary.', disabled=not uploaded_file)
+class StreamHandler(BaseCallbackHandler):
+    def __init__(self, container: st.delta_generator.DeltaGenerator, initial_text: str = ""):
+        self.container = container
+        self.text = initial_text
+        self.run_id_ignore_token = None
 
-# Form input and query
-result = []
-with st.form('myform', clear_on_submit=True):
-    openai_api_key = st.text_input('OpenAI API Key', type='password', disabled=not (uploaded_file and query_text))
-    submitted = st.form_submit_button('Submit', disabled=not(uploaded_file and query_text))
-    if submitted and openai_api_key.startswith('sk-'):
-        with st.spinner('Calculating...'):
-            response = generate_response(uploaded_file, openai_api_key, query_text)
-            result.append(response)
-            del openai_api_key
+    def on_llm_start(self, serialized: dict, prompts: list, **kwargs):
+        # Workaround to prevent showing the rephrased question as output
+        if prompts[0].startswith("Human"):
+            self.run_id_ignore_token = kwargs.get("run_id")
 
-if len(result):
-    st.info(response)
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        if self.run_id_ignore_token == kwargs.get("run_id", False):
+            return
+        self.text += token
+        self.container.markdown(self.text)
+
+
+class PrintRetrievalHandler(BaseCallbackHandler):
+    def __init__(self, container):
+        self.status = container.status("**Context Retrieval**")
+
+    def on_retriever_start(self, serialized: dict, query: str, **kwargs):
+        self.status.write(f"**Question:** {query}")
+        self.status.update(label=f"**Context Retrieval:** {query}")
+
+    def on_retriever_end(self, documents, **kwargs):
+        for idx, doc in enumerate(documents):
+            source = os.path.basename(doc.metadata["source"])
+            self.status.write(f"**Document {idx} from {source}**")
+            self.status.markdown(doc.page_content)
+        self.status.update(state="complete")
+
+
+openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+if not openai_api_key:
+    st.info("Please add your OpenAI API key to continue.")
+    st.stop()
+
+uploaded_files = st.sidebar.file_uploader(
+    label="Upload PDF files", type=["pdf"], accept_multiple_files=True
+)
+if not uploaded_files:
+    st.info("Please upload PDF documents to continue.")
+    st.stop()
+
+retriever = configure_retriever(uploaded_files)
+
+# Setup memory for contextual conversation
+msgs = StreamlitChatMessageHistory()
+memory = ConversationBufferMemory(memory_key="chat_history", chat_memory=msgs, return_messages=True)
+
+# Setup LLM and QA chain
+llm = ChatOpenAI(
+    model_name="gpt-3.5-turbo", openai_api_key=openai_api_key, temperature=0, streaming=True
+)
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm, retriever=retriever, memory=memory, verbose=True
+)
+
+if len(msgs.messages) == 0 or st.sidebar.button("Clear message history"):
+    msgs.clear()
+    msgs.add_ai_message("What do you want to know about your document?")
+
+avatars = {"human": "user", "ai": "assistant"}
+for msg in msgs.messages:
+    st.chat_message(avatars[msg.type]).write(msg.content)
+
+if user_query := st.chat_input(placeholder="Ask me stuff!"):
+    st.chat_message("user").write(user_query)
+
+    with st.chat_message("assistant"):
+        retrieval_handler = PrintRetrievalHandler(st.container())
+        stream_handler = StreamHandler(st.empty())
+        response = qa_chain.run(user_query, callbacks=[retrieval_handler, stream_handler])
