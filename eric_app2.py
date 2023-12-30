@@ -18,8 +18,8 @@ st.title("🤓 Chat with Eric the Econs E-Teacher about Economics!")
 @st.cache_resource(ttl="1h")
 def configure_retriever():
     
-    owner = 'jemyap91'
-    repo = 'LLM-for-good'
+    owner = 'CJC-econs-chatbot'
+    repo = 'chatbot'
     file_paths = ['2022 H2 Market Failure Lecture Notes_final.pdf', '2022 H2 DDSS Lecture Notes_final_updated.pdf', '2022 H2 SOL Lecture Notes_final.pdf', '2022 H1H2 CPE Lecture Notes_final.pdf', '2022 JC 1 H2 Firms Decisions and Strategies Lecture Notes_final (1).pdf']
     
     # Read documents
